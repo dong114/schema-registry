@@ -1078,6 +1078,7 @@ public class AvroData {
     Schema schema = (avroSchema.equals(ANYTHING_SCHEMA))
         ? null
         : toConnectSchema(avroSchema, toConnectContext);
+        
     return new SchemaAndValue(schema, toConnectData(schema, value, toConnectContext));
   }
 
@@ -1297,7 +1298,17 @@ public class AvroData {
 
         case STRUCT: {
           // Special case support for union types
-          if (schema.name() != null && schema.name().equals(AVRO_TYPE_UNION)) {
+          if (schema.name() != null && value instanceof GenericData.EnumSymbol) {
+            // Schema valueRecordSchema = null;
+            // converted = value.toString();
+            GenericData.EnumSymbol enumSymbol = (GenericData.EnumSymbol) value;
+            Field field = schema.field(enumSymbol.getSchema().getName());
+            Schema fieldSchema = field.schema();
+            converted = new Struct(schema).put(enumSymbol.getSchema().getName(),
+                toConnectData(fieldSchema, enumSymbol.toString(), toConnectContext));
+  
+            break;
+          } else if (schema.name() != null && schema.name().equals(AVRO_TYPE_UNION)) {
             Schema valueRecordSchema = null;
             if (value instanceof IndexedRecord) {
               IndexedRecord valueRecord = ((IndexedRecord) value);
@@ -1307,6 +1318,17 @@ public class AvroData {
             for (Field field : schema.fields()) {
               Schema fieldSchema = field.schema();
 
+              /**
+               * if (value instanceof GenericData.EnumSymbol) { Struct result =
+               * new Struct(schema);
+               * 
+               * Object convertedFieldValue = toConnectData(field.schema(), value,
+               * toConnectContext); result.put(field, convertedFieldValue);
+               * 
+               * converted = result;
+               * 
+               * } else
+               */
               if (isInstanceOfAvroSchemaTypeForSimpleSchema(fieldSchema, value)
                   || (valueRecordSchema != null && schemaEquals(valueRecordSchema, fieldSchema))) {
                 converted = new Struct(schema).put(
@@ -1345,6 +1367,7 @@ public class AvroData {
       }
       return converted;
     } catch (ClassCastException e) {
+      e.printStackTrace();
       throw new DataException("Invalid type for " + schema.type() + ": " + value.getClass());
     }
   }
@@ -1507,13 +1530,23 @@ public class AvroData {
       case ENUM:
         // enums are unwrapped to strings and the original enum is not preserved
         builder = SchemaBuilder.string();
+        //builder.defaultValue(schema.getProp("default"));
         if (schema.getDoc() != null) {
           builder.parameter(CONNECT_ENUM_DOC_PROP, schema.getDoc());
         }
+        /**
         builder.parameter(AVRO_TYPE_ENUM, schema.getFullName());
         for (String enumSymbol : schema.getEnumSymbols()) {
           builder.parameter(AVRO_TYPE_ENUM + "." + enumSymbol, enumSymbol);
         }
+        **/
+        builder.name(schema.getFullName());
+        //builder.parameter("mav.enum", schema.getFullName());
+        for (String enumSymbol : schema.getEnumSymbols()) {
+          builder.parameter(enumSymbol, enumSymbol);
+        }
+        
+        
         break;
 
       case UNION: {
@@ -1527,21 +1560,32 @@ public class AvroData {
             }
           }
         }
-        builder = SchemaBuilder.struct().name(AVRO_TYPE_UNION);
-        Set<String> fieldNames = new HashSet<>();
-        for (org.apache.avro.Schema memberSchema : schema.getTypes()) {
-          if (memberSchema.getType() == org.apache.avro.Schema.Type.NULL) {
-            builder.optional();
-          } else {
-            String fieldName = unionMemberFieldName(memberSchema);
-            if (fieldNames.contains(fieldName)) {
-              throw new DataException("Multiple union schemas map to the Connect union field name");
+
+        //convert enum to string
+        if (schema.getTypes().get(0).getType() == org.apache.avro.Schema.Type.ENUM) {
+          builder = SchemaBuilder.struct().name(schema.getTypes().get(0).getName());
+          builder.field(schema.getTypes().get(0).getName(), Schema.STRING_SCHEMA);
+  
+          for (String sbl : schema.getTypes().get(0).getEnumSymbols()) {
+            builder.parameter(sbl, sbl);
+          }
+        } else {
+  
+          builder = SchemaBuilder.struct().name(AVRO_TYPE_UNION);
+          Set<String> fieldNames = new HashSet<>();
+          for (org.apache.avro.Schema memberSchema : schema.getTypes()) {
+            if (memberSchema.getType() == org.apache.avro.Schema.Type.NULL) {
+              builder.optional();
+            } else {
+              String fieldName = unionMemberFieldName(memberSchema);
+              if (fieldNames.contains(fieldName)) {
+                throw new DataException("Multiple union schemas map to" 
+                    + " the Connect union field name");
+              }
+              fieldNames.add(fieldName);
+              builder.field(fieldName, 
+                  toConnectSchemaWithCycles(memberSchema, true, null, null, toConnectContext));
             }
-            fieldNames.add(fieldName);
-            builder.field(
-                fieldName,
-                toConnectSchemaWithCycles(memberSchema, true, null, null, toConnectContext)
-            );
           }
         }
         break;
